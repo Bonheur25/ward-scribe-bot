@@ -6,9 +6,11 @@ import requests
 import time
 import threading
 import mimetypes
+import tempfile
 from datetime import datetime
 from flask import Flask, request, jsonify
 from collections import deque
+from urllib.parse import unquote, urlparse
 
 # =========================
 # APP SETUP
@@ -88,7 +90,56 @@ def guess_audio_content_type(audio_url=None, provided_content_type=None, file_na
 # GROQ WHISPER
 # =========================
 
-def transcribe_groq(audio_bytes, content_type=None, file_name=None):
+GROQ_AUDIO_EXTENSIONS = {".flac", ".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".ogg", ".wav", ".webm"}
+
+GROQ_CONTENT_TYPE_EXTENSIONS = {
+    "audio/flac": ".flac",
+    "audio/mpeg": ".mp3",
+    "audio/mp3": ".mp3",
+    "audio/mp4": ".mp4",
+    "audio/mp4a-latm": ".m4a",
+    "audio/m4a": ".m4a",
+    "audio/ogg": ".ogg",
+    "audio/opus": ".ogg",
+    "audio/wav": ".wav",
+    "audio/x-wav": ".wav",
+    "audio/webm": ".webm",
+    "video/mp4": ".mp4",
+    "video/webm": ".webm",
+}
+
+
+def _groq_audio_extension(audio_url=None, content_type=None, file_name=None):
+    candidates = []
+
+    if file_name:
+        candidates.append(file_name)
+
+    if audio_url:
+        path = unquote(urlparse(audio_url).path)
+        candidates.append(path)
+
+    for candidate in candidates:
+        _, extension = os.path.splitext(candidate.split("?", 1)[0])
+        extension = extension.lower()
+        if extension in GROQ_AUDIO_EXTENSIONS:
+            return extension
+
+    if content_type:
+        clean_content_type = content_type.split(";", 1)[0].strip().lower()
+        if clean_content_type in GROQ_CONTENT_TYPE_EXTENSIONS:
+            return GROQ_CONTENT_TYPE_EXTENSIONS[clean_content_type]
+
+        guessed_extension = mimetypes.guess_extension(clean_content_type)
+        if guessed_extension:
+            guessed_extension = guessed_extension.lower()
+            if guessed_extension in GROQ_AUDIO_EXTENSIONS:
+                return guessed_extension
+
+    return ".ogg"
+
+
+def transcribe_groq(audio_bytes, content_type=None, file_name=None, audio_url=None):
 
     if not GROQ_API_KEY:
         raise RuntimeError("GROQ_API_KEY is not set")
@@ -99,25 +150,45 @@ def transcribe_groq(audio_bytes, content_type=None, file_name=None):
         "Authorization": f"Bearer {GROQ_API_KEY}"
     }
 
-    files = {
-        "file": (
-            file_name or "audio",
-            audio_bytes,
-            content_type or "application/octet-stream"
-        )
-    }
-
     data = {
         "model": "whisper-large-v3"
     }
 
-    response = requests.post(
-        url,
-        headers=headers,
-        files=files,
-        data=data,
-        timeout=120
+    extension = _groq_audio_extension(
+        audio_url=audio_url,
+        content_type=content_type,
+        file_name=file_name
     )
+    upload_name = f"audio{extension}"
+    temp_path = None
+
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=extension) as temp_audio:
+            temp_audio.write(audio_bytes)
+            temp_path = temp_audio.name
+
+        with open(temp_path, "rb") as audio_file:
+            files = {
+                "file": (
+                    upload_name,
+                    audio_file,
+                    content_type or mimetypes.types_map.get(extension, "application/octet-stream")
+                )
+            }
+
+            response = requests.post(
+                url,
+                headers=headers,
+                files=files,
+                data=data,
+                timeout=120
+            )
+    finally:
+        if temp_path:
+            try:
+                os.unlink(temp_path)
+            except OSError as e:
+                log.warning(f"Could not remove temp audio file {temp_path}: {e}")
 
     log.info(f"GROQ TRANSCRIPTION STATUS: {response.status_code}")
     log.info(f"GROQ TRANSCRIPTION RESPONSE: {response.text[:500]}")
@@ -342,7 +413,7 @@ def worker():
                 file_name=file_name
             )
 
-            transcript = transcribe_groq(audio, content_type, file_name)
+            transcript = transcribe_groq(audio, content_type, file_name, audio_url)
 
             result = structure_text(transcript)
 
