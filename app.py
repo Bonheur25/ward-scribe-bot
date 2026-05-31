@@ -25,6 +25,7 @@ log = logging.getLogger("ward-scribe")
 # =========================
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 GREEN_API_ID = os.getenv("GREEN_API_ID")
 GREEN_API_TOKEN = os.getenv("GREEN_API_TOKEN")
@@ -87,12 +88,12 @@ def guess_audio_content_type(audio_url=None, provided_content_type=None, file_na
     return "application/octet-stream"
 
 # =========================
-# GROQ WHISPER
+# OPENAI WHISPER
 # =========================
 
-GROQ_AUDIO_EXTENSIONS = {".flac", ".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".ogg", ".wav", ".webm"}
+OPENAI_AUDIO_EXTENSIONS = {".flac", ".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".ogg", ".wav", ".webm"}
 
-GROQ_CONTENT_TYPE_EXTENSIONS = {
+OPENAI_CONTENT_TYPE_EXTENSIONS = {
     "audio/flac": ".flac",
     "audio/mpeg": ".mp3",
     "audio/mp3": ".mp3",
@@ -109,7 +110,16 @@ GROQ_CONTENT_TYPE_EXTENSIONS = {
 }
 
 
-def _groq_audio_extension(audio_url=None, content_type=None, file_name=None):
+OPENAI_TRANSCRIPTION_PROMPT = (
+    "Uyu murwayi, yahageze, nimugoroba, ejo, bamushyize, turacyagereje, "
+    "gusa, twanamusabize, muri, bed, labs, fluids, ciplo, orthopedie, "
+    "ceftriaxone, Ringers Lactate, antibiotique, oxygen therapy, steroid, "
+    "immunosuppressant, medecine interne, sodium, electrolyte, cardiac arrest, "
+    "ambulance, consultation"
+)
+
+
+def _openai_audio_extension(audio_url=None, content_type=None, file_name=None):
     candidates = []
 
     if file_name:
@@ -122,47 +132,40 @@ def _groq_audio_extension(audio_url=None, content_type=None, file_name=None):
     for candidate in candidates:
         _, extension = os.path.splitext(candidate.split("?", 1)[0])
         extension = extension.lower()
-        if extension in GROQ_AUDIO_EXTENSIONS:
+        if extension in OPENAI_AUDIO_EXTENSIONS:
             return extension
 
     if content_type:
         clean_content_type = content_type.split(";", 1)[0].strip().lower()
-        if clean_content_type in GROQ_CONTENT_TYPE_EXTENSIONS:
-            return GROQ_CONTENT_TYPE_EXTENSIONS[clean_content_type]
+        if clean_content_type in OPENAI_CONTENT_TYPE_EXTENSIONS:
+            return OPENAI_CONTENT_TYPE_EXTENSIONS[clean_content_type]
 
         guessed_extension = mimetypes.guess_extension(clean_content_type)
         if guessed_extension:
             guessed_extension = guessed_extension.lower()
-            if guessed_extension in GROQ_AUDIO_EXTENSIONS:
+            if guessed_extension in OPENAI_AUDIO_EXTENSIONS:
                 return guessed_extension
 
     return ".ogg"
 
 
-def transcribe_groq(audio_bytes, content_type=None, file_name=None, audio_url=None):
+def transcribe_openai(audio_bytes, content_type=None, file_name=None, audio_url=None):
 
-    if not GROQ_API_KEY:
-        raise RuntimeError("GROQ_API_KEY is not set")
+    if not OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY is not set")
 
-    url = "https://api.groq.com/openai/v1/audio/transcriptions"
+    url = "https://api.openai.com/v1/audio/transcriptions"
 
     headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}"
+        "Authorization": f"Bearer {OPENAI_API_KEY}"
     }
 
     data = {
-        "model": "whisper-large-v3",
-        "prompt": (
-            "Uyu murwayi, yahageze, nimugoroba, ejo, bamushyize, "
-            "turacyagereje, gusa, twanamusabize, muri, bed, labs, fluids, "
-            "ciplo, orthopedie, ceftriaxone, Ringers Lactate, antibiotique, "
-            "oxygen therapy, steroid, immunosuppressant, medecine interne, "
-            "sodium, electrolyte, cardiac arrest, ambulance, consultation, "
-            "rendez vous, ibintu, kugenda, murwayi, indwara"
-        )
+        "model": "whisper-1",
+        "prompt": OPENAI_TRANSCRIPTION_PROMPT
     }
 
-    extension = _groq_audio_extension(
+    extension = _openai_audio_extension(
         audio_url=audio_url,
         content_type=content_type,
         file_name=file_name
@@ -198,11 +201,11 @@ def transcribe_groq(audio_bytes, content_type=None, file_name=None, audio_url=No
             except OSError as e:
                 log.warning(f"Could not remove temp audio file {temp_path}: {e}")
 
-    log.info(f"GROQ TRANSCRIPTION STATUS: {response.status_code}")
-    log.info(f"GROQ TRANSCRIPTION RESPONSE: {response.text[:500]}")
+    log.info(f"OPENAI TRANSCRIPTION STATUS: {response.status_code}")
+    log.info(f"OPENAI TRANSCRIPTION RESPONSE: {response.text[:500]}")
 
     if response.status_code != 200:
-        raise RuntimeError(f"Groq transcription error {response.status_code}: {response.text[:200]}")
+        raise RuntimeError(f"OpenAI transcription error {response.status_code}: {response.text[:200]}")
 
     result = response.json()
 
@@ -360,7 +363,7 @@ def worker():
                 file_name=file_name
             )
 
-            transcript = transcribe_groq(audio, content_type, file_name, audio_url)
+            transcript = transcribe_openai(audio, content_type, file_name, audio_url)
 
             result = structure_text(transcript)
 
