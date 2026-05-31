@@ -9,7 +9,6 @@ import mimetypes
 from datetime import datetime
 from flask import Flask, request, jsonify
 from collections import deque
-from huggingface_hub import InferenceClient
 
 # =========================
 # APP SETUP
@@ -23,7 +22,7 @@ log = logging.getLogger("ward-scribe")
 # ENV VARIABLES
 # =========================
 
-HF_TOKEN = os.getenv("HF_TOKEN")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 GREEN_API_ID = os.getenv("GREEN_API_ID")
 GREEN_API_TOKEN = os.getenv("GREEN_API_TOKEN")
@@ -86,43 +85,50 @@ def guess_audio_content_type(audio_url=None, provided_content_type=None, file_na
     return "application/octet-stream"
 
 # =========================
-# HUGGINGFACE WHISPER
+# GROQ WHISPER
 # =========================
 
-def transcribe_hf(audio_bytes, content_type=None):
+def transcribe_groq(audio_bytes, content_type=None, file_name=None):
 
-    if not HF_TOKEN:
-        raise RuntimeError("HF_TOKEN is not set")
+    if not GROQ_API_KEY:
+        raise RuntimeError("GROQ_API_KEY is not set")
 
-    # ✅ UPDATED WORKING HF ENDPOINT
-    API_URL = "https://router.huggingface.co/hf-inference/models/openai/whisper-small"
+    url = "https://api.groq.com/openai/v1/audio/transcriptions"
 
     headers = {
-        "Authorization": f"Bearer {HF_TOKEN}",
-        "Content-Type": content_type or "application/octet-stream"
+        "Authorization": f"Bearer {GROQ_API_KEY}"
+    }
+
+    files = {
+        "file": (
+            file_name or "audio",
+            audio_bytes,
+            content_type or "application/octet-stream"
+        )
+    }
+
+    data = {
+        "model": "whisper-large-v3"
     }
 
     response = requests.post(
-        API_URL,
+        url,
         headers=headers,
-        data=audio_bytes,
+        files=files,
+        data=data,
         timeout=120
     )
 
-    # DEBUG LOGS
-    log.info(f"HF STATUS: {response.status_code}")
-    log.info(f"HF RESPONSE: {response.text[:500]}")
+    log.info(f"GROQ TRANSCRIPTION STATUS: {response.status_code}")
+    log.info(f"GROQ TRANSCRIPTION RESPONSE: {response.text[:500]}")
 
     if response.status_code != 200:
-        return f"HF ERROR {response.status_code}"
+        raise RuntimeError(f"Groq transcription error {response.status_code}: {response.text[:200]}")
 
     result = response.json()
 
     if isinstance(result, dict) and "text" in result:
         return result["text"]
-
-    if isinstance(result, list) and len(result) > 0:
-        return result[0].get("text", "")
 
     return "No transcription available"
 
@@ -130,38 +136,21 @@ def transcribe_hf(audio_bytes, content_type=None):
 # CLINICAL STRUCTURE
 # =========================
 
-def _extract_generated_text(result):
-    if isinstance(result, list) and result:
-        first = result[0]
-        if isinstance(first, dict):
-            return first.get("generated_text") or first.get("text") or ""
-
-    if isinstance(result, dict):
-        if result.get("error"):
-            raise RuntimeError(result["error"])
-
-        return (
-            result.get("generated_text")
-            or result.get("text")
-            or result.get("summary_text")
-            or ""
-        )
-
-    return ""
-
-
 def structure_text(transcript):
-    if not HF_TOKEN:
-        raise RuntimeError("HF_TOKEN is not set")
+    if not GROQ_API_KEY:
+        raise RuntimeError("GROQ_API_KEY is not set")
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     system_prompt = (
-        "You are a careful clinical ward scribe. Convert clinical transcripts "
-        "into concise SOAP-style ward notes. Use only information supported by "
-        "the transcript. Do not invent demographics, vitals, exam findings, "
-        "diagnoses, investigations, or treatments. If information is missing, "
-        'write "Not stated". Return only the note, with no extra commentary.'
+        "You are a careful clinical scribe in Rwanda, where doctors may mix "
+        "Kinyarwanda, French, and English in the same clinical conversation. "
+        "Convert clinical transcripts into concise, structured SOAP ward notes "
+        "in English regardless of the input language. Use only information "
+        "supported by the transcript. Do not invent demographics, vitals, exam "
+        "findings, diagnoses, investigations, or treatments. If information is "
+        'missing, write "Not stated". Return only the note, with no extra '
+        "commentary."
     )
 
     user_prompt = f"""
@@ -200,35 +189,39 @@ Transcript:
 {transcript}
 """.strip()
 
-    client = InferenceClient(
-        model="meta-llama/Llama-3.3-70B-Instruct",
-        token=HF_TOKEN
-    )
-
-    try:
-        response = client.chat_completion(
-            messages=[
+    response = requests.post(
+        "https://api.groq.com/openai/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json"
+        },
+        json={
+            "model": "llama-3.3-70b-versatile",
+            "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            max_tokens=800
-        )
-    except Exception as e:
-        raise RuntimeError(f"HF text generation error: {e}") from e
+            "max_tokens": 800,
+            "temperature": 0.2,
+            "top_p": 0.9
+        },
+        timeout=120
+    )
 
-    log.info(f"HF STRUCTURE RESPONSE: {str(response)[:500]}")
+    log.info(f"GROQ SOAP STATUS: {response.status_code}")
+    log.info(f"GROQ SOAP RESPONSE: {response.text[:500]}")
+
+    if response.status_code != 200:
+        raise RuntimeError(f"Groq SOAP generation error {response.status_code}: {response.text[:200]}")
+
+    result = response.json()
+    if isinstance(result, dict) and result.get("error"):
+        raise RuntimeError(f"Groq SOAP generation error: {result['error']}")
 
     try:
-        first_choice = response.choices[0]
-        message = first_choice.message
-        generated = message.content.strip()
-    except AttributeError:
-        try:
-            generated = response["choices"][0]["message"]["content"].strip()
-        except (KeyError, IndexError, TypeError) as e:
-            raise RuntimeError(f"Unexpected HF chat completion response: {str(response)[:300]}") from e
-    except (IndexError, TypeError) as e:
-        raise RuntimeError(f"Unexpected HF chat completion response: {str(response)[:300]}") from e
+        generated = result["choices"][0]["message"]["content"].strip()
+    except (KeyError, IndexError, TypeError) as e:
+        raise RuntimeError(f"Unexpected Groq chat completion response: {str(result)[:300]}") from e
 
     if generated:
         return generated
@@ -349,7 +342,7 @@ def worker():
                 file_name=file_name
             )
 
-            transcript = transcribe_hf(audio, content_type)
+            transcript = transcribe_groq(audio, content_type, file_name)
 
             result = structure_text(transcript)
 
