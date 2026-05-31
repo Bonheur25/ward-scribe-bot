@@ -150,23 +150,25 @@ def _extract_generated_text(result):
 
 
 def structure_text(transcript):
-
     if not HF_TOKEN:
         raise RuntimeError("HF_TOKEN is not set")
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    API_URL = "https://router.huggingface.co/hf-inference/models/mistralai/Mistral-7B-Instruct-v0.3"
+    API_URL = "https://router.huggingface.co/novita/v3/openai/chat/completions"
 
-    prompt = f"""<s>[INST]
-You are a careful clinical ward scribe. Convert the transcript into a concise SOAP-style ward note.
+    system_prompt = (
+        "You are a careful clinical ward scribe. Convert clinical transcripts "
+        "into concise SOAP-style ward notes. Use only information supported by "
+        "the transcript. Do not invent demographics, vitals, exam findings, "
+        "diagnoses, investigations, or treatments. If information is missing, "
+        'write "Not stated". Return only the note, with no extra commentary.'
+    )
 
-Rules:
-- Use only information supported by the transcript.
-- Do not invent demographics, vitals, exam findings, diagnoses, investigations, or treatments.
-- If a field is not available, write "Not stated" for that field.
-- Keep the note clinically useful and specific to the transcript.
-- Return only the note in exactly this format:
+    user_prompt = f"""
+Create a clinical SOAP note from the transcript below.
+
+Required format:
 
 PATIENT:
 ...
@@ -178,6 +180,9 @@ TRANSCRIPT:
 ...
 
 SUBJECTIVE:
+...
+
+OBJECTIVE:
 ...
 
 ASSESSMENT:
@@ -194,7 +199,7 @@ PEARL:
 
 Transcript:
 {transcript}
-[/INST]"""
+""".strip()
 
     headers = {
         "Authorization": f"Bearer {HF_TOKEN}",
@@ -202,13 +207,14 @@ Transcript:
     }
 
     payload = {
-        "inputs": prompt,
-        "parameters": {
-            "max_new_tokens": 700,
-            "temperature": 0.2,
-            "top_p": 0.9,
-            "return_full_text": False
-        }
+        "model": "mistralai/Mixtral-8x7B-Instruct-v0.1",
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        "max_tokens": 900,
+        "temperature": 0.2,
+        "top_p": 0.9
     }
 
     response = requests.post(
@@ -224,10 +230,14 @@ Transcript:
     if response.status_code != 200:
         raise RuntimeError(f"HF text generation error {response.status_code}: {response.text[:200]}")
 
-    generated = _extract_generated_text(response.json()).strip()
+    result = response.json()
+    if isinstance(result, dict) and result.get("error"):
+        raise RuntimeError(f"HF text generation error: {result['error']}")
 
-    if generated.startswith(prompt):
-        generated = generated[len(prompt):].strip()
+    try:
+        generated = result["choices"][0]["message"]["content"].strip()
+    except (KeyError, IndexError, TypeError) as e:
+        raise RuntimeError(f"Unexpected HF chat completion response: {str(result)[:300]}") from e
 
     if generated:
         return generated
@@ -244,6 +254,9 @@ TRANSCRIPT:
 
 SUBJECTIVE:
 {transcript}
+
+OBJECTIVE:
+Not stated
 
 ASSESSMENT:
 Not stated
