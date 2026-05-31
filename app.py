@@ -151,7 +151,15 @@ def transcribe_groq(audio_bytes, content_type=None, file_name=None, audio_url=No
     }
 
     data = {
-        "model": "whisper-large-v3"
+        "model": "whisper-large-v3",
+        "prompt": (
+            "Uyu murwayi, yahageze, nimugoroba, ejo, bamushyize, "
+            "turacyagereje, gusa, twanamusabize, muri, bed, labs, fluids, "
+            "ciplo, orthopedie, ceftriaxone, Ringers Lactate, antibiotique, "
+            "oxygen therapy, steroid, immunosuppressant, medecine interne, "
+            "sodium, electrolyte, cardiac arrest, ambulance, consultation, "
+            "rendez vous, ibintu, kugenda, murwayi, indwara"
+        )
     }
 
     extension = _groq_audio_extension(
@@ -211,50 +219,16 @@ def structure_text(transcript):
     if not GROQ_API_KEY:
         raise RuntimeError("GROQ_API_KEY is not set")
 
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
-
     system_prompt = (
-        "You are a careful clinical scribe in Rwanda, where doctors may mix "
-        "Kinyarwanda, French, and English in the same clinical conversation. "
-        "Convert clinical transcripts into concise, structured SOAP ward notes "
-        "in English regardless of the input language. Use only information "
-        "supported by the transcript. Do not invent demographics, vitals, exam "
-        "findings, diagnoses, investigations, or treatments. If information is "
-        'missing, write "Not stated". Return only the note, with no extra '
-        "commentary."
+        "You are a clinical ward scribe in Rwanda. Doctors speak in mixed "
+        "Kinyarwanda, French and English. Never say Not stated - always infer "
+        "clinically from context. If something is unclear flag it with a "
+        "warning emoji. Output structured ward note with: Patient, Admission, "
+        "Presenting complaint, Management so far, Pending, Plan, Clinical flags."
     )
 
     user_prompt = f"""
-Create a clinical SOAP note from the transcript below.
-
-Required format:
-
-PATIENT:
-...
-
-TIME:
-{now}
-
-TRANSCRIPT:
-...
-
-SUBJECTIVE:
-...
-
-OBJECTIVE:
-...
-
-ASSESSMENT:
-...
-
-PLAN:
-- ...
-
-DIFFERENTIALS:
-- ...
-
-PEARL:
-...
+Create a structured ward note in English from the transcript below.
 
 Transcript:
 {transcript}
@@ -279,15 +253,15 @@ Transcript:
         timeout=120
     )
 
-    log.info(f"GROQ SOAP STATUS: {response.status_code}")
-    log.info(f"GROQ SOAP RESPONSE: {response.text[:500]}")
+    log.info(f"GROQ WARD NOTE STATUS: {response.status_code}")
+    log.info(f"GROQ WARD NOTE RESPONSE: {response.text[:500]}")
 
     if response.status_code != 200:
-        raise RuntimeError(f"Groq SOAP generation error {response.status_code}: {response.text[:200]}")
+        raise RuntimeError(f"Groq ward note generation error {response.status_code}: {response.text[:200]}")
 
     result = response.json()
     if isinstance(result, dict) and result.get("error"):
-        raise RuntimeError(f"Groq SOAP generation error: {result['error']}")
+        raise RuntimeError(f"Groq ward note generation error: {result['error']}")
 
     try:
         generated = result["choices"][0]["message"]["content"].strip()
@@ -297,34 +271,7 @@ Transcript:
     if generated:
         return generated
 
-    return f"""
-PATIENT:
-Not specified
-
-TIME:
-{now}
-
-TRANSCRIPT:
-{transcript}
-
-SUBJECTIVE:
-{transcript}
-
-OBJECTIVE:
-Not stated
-
-ASSESSMENT:
-Not stated
-
-PLAN:
-- Not stated
-
-DIFFERENTIALS:
-- Not stated
-
-PEARL:
-Not stated
-"""
+    raise RuntimeError("Groq ward note generation returned empty content")
 
 # =========================
 # NOTION SAVE
