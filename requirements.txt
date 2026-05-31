@@ -5,4 +5,3 @@ google-generativeai
 notion-client
 requests
 python-dotenv
-openai

@@ -25,7 +25,7 @@ log = logging.getLogger("ward-scribe")
 # =========================
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 GREEN_API_ID = os.getenv("GREEN_API_ID")
 GREEN_API_TOKEN = os.getenv("GREEN_API_TOKEN")
@@ -88,12 +88,12 @@ def guess_audio_content_type(audio_url=None, provided_content_type=None, file_na
     return "application/octet-stream"
 
 # =========================
-# OPENAI WHISPER
+# GROQ WHISPER
 # =========================
 
-OPENAI_AUDIO_EXTENSIONS = {".flac", ".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".ogg", ".wav", ".webm"}
+GROQ_AUDIO_EXTENSIONS = {".flac", ".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".ogg", ".wav", ".webm"}
 
-OPENAI_CONTENT_TYPE_EXTENSIONS = {
+GROQ_CONTENT_TYPE_EXTENSIONS = {
     "audio/flac": ".flac",
     "audio/mpeg": ".mp3",
     "audio/mp3": ".mp3",
@@ -110,16 +110,16 @@ OPENAI_CONTENT_TYPE_EXTENSIONS = {
 }
 
 
-OPENAI_TRANSCRIPTION_PROMPT = (
+GROQ_TRANSCRIPTION_PROMPT = (
     "Uyu murwayi, yahageze, nimugoroba, ejo, bamushyize, turacyagereje, "
     "gusa, twanamusabize, muri, bed, labs, fluids, ciplo, orthopedie, "
     "ceftriaxone, Ringers Lactate, antibiotique, oxygen therapy, steroid, "
     "immunosuppressant, medecine interne, sodium, electrolyte, cardiac arrest, "
-    "ambulance, consultation"
+    "ambulance, consultation, rendez vous, ibintu, kugenda, murwayi, indwara"
 )
 
 
-def _openai_audio_extension(audio_url=None, content_type=None, file_name=None):
+def _groq_audio_extension(audio_url=None, content_type=None, file_name=None):
     candidates = []
 
     if file_name:
@@ -132,40 +132,40 @@ def _openai_audio_extension(audio_url=None, content_type=None, file_name=None):
     for candidate in candidates:
         _, extension = os.path.splitext(candidate.split("?", 1)[0])
         extension = extension.lower()
-        if extension in OPENAI_AUDIO_EXTENSIONS:
+        if extension in GROQ_AUDIO_EXTENSIONS:
             return extension
 
     if content_type:
         clean_content_type = content_type.split(";", 1)[0].strip().lower()
-        if clean_content_type in OPENAI_CONTENT_TYPE_EXTENSIONS:
-            return OPENAI_CONTENT_TYPE_EXTENSIONS[clean_content_type]
+        if clean_content_type in GROQ_CONTENT_TYPE_EXTENSIONS:
+            return GROQ_CONTENT_TYPE_EXTENSIONS[clean_content_type]
 
         guessed_extension = mimetypes.guess_extension(clean_content_type)
         if guessed_extension:
             guessed_extension = guessed_extension.lower()
-            if guessed_extension in OPENAI_AUDIO_EXTENSIONS:
+            if guessed_extension in GROQ_AUDIO_EXTENSIONS:
                 return guessed_extension
 
     return ".ogg"
 
 
-def transcribe_openai(audio_bytes, content_type=None, file_name=None, audio_url=None):
+def transcribe_groq(audio_bytes, content_type=None, file_name=None, audio_url=None):
 
-    if not OPENAI_API_KEY:
-        raise RuntimeError("OPENAI_API_KEY is not set")
+    if not GROQ_API_KEY:
+        raise RuntimeError("GROQ_API_KEY is not set")
 
-    url = "https://api.openai.com/v1/audio/transcriptions"
+    url = "https://api.groq.com/openai/v1/audio/transcriptions"
 
     headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}"
+        "Authorization": f"Bearer {GROQ_API_KEY}"
     }
 
     data = {
-        "model": "whisper-1",
-        "prompt": OPENAI_TRANSCRIPTION_PROMPT
+        "model": "whisper-large-v3",
+        "prompt": GROQ_TRANSCRIPTION_PROMPT
     }
 
-    extension = _openai_audio_extension(
+    extension = _groq_audio_extension(
         audio_url=audio_url,
         content_type=content_type,
         file_name=file_name
@@ -201,11 +201,11 @@ def transcribe_openai(audio_bytes, content_type=None, file_name=None, audio_url=
             except OSError as e:
                 log.warning(f"Could not remove temp audio file {temp_path}: {e}")
 
-    log.info(f"OPENAI TRANSCRIPTION STATUS: {response.status_code}")
-    log.info(f"OPENAI TRANSCRIPTION RESPONSE: {response.text[:500]}")
+    log.info(f"GROQ TRANSCRIPTION STATUS: {response.status_code}")
+    log.info(f"GROQ TRANSCRIPTION RESPONSE: {response.text[:500]}")
 
     if response.status_code != 200:
-        raise RuntimeError(f"OpenAI transcription error {response.status_code}: {response.text[:200]}")
+        raise RuntimeError(f"Groq transcription error {response.status_code}: {response.text[:200]}")
 
     result = response.json()
 
@@ -219,15 +219,15 @@ def transcribe_openai(audio_bytes, content_type=None, file_name=None, audio_url=
 # =========================
 
 def structure_text(transcript):
-    if not GROQ_API_KEY:
-        raise RuntimeError("GROQ_API_KEY is not set")
+    if not GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY is not set")
 
     system_prompt = (
         "You are a clinical ward scribe in Rwanda. Doctors speak in mixed "
-        "Kinyarwanda, French and English. Never say Not stated - always infer "
-        "clinically from context. If something is unclear flag it with a "
-        "warning emoji. Output structured ward note with: Patient, Admission, "
-        "Presenting complaint, Management so far, Pending, Plan, Clinical flags."
+        "Kinyarwanda, French and English - output a structured ward note with "
+        "Patient, Admission, Presenting complaint, Management, Pending, Plan "
+        "sections - never say Not stated, always infer from context, flag "
+        "uncertainties with warning emoji."
     )
 
     user_prompt = f"""
@@ -238,43 +238,55 @@ Transcript:
 """.strip()
 
     response = requests.post(
-        "https://api.groq.com/openai/v1/chat/completions",
+        f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key={GEMINI_API_KEY}",
         headers={
-            "Authorization": f"Bearer {GROQ_API_KEY}",
             "Content-Type": "application/json"
         },
         json={
-            "model": "llama-3.3-70b-versatile",
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
+            "systemInstruction": {
+                "parts": [
+                    {"text": system_prompt}
+                ]
+            },
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        {"text": user_prompt}
+                    ]
+                }
             ],
-            "max_tokens": 800,
-            "temperature": 0.2,
-            "top_p": 0.9
+            "generationConfig": {
+                "maxOutputTokens": 800,
+                "temperature": 0.2,
+                "topP": 0.9
+            }
         },
         timeout=120
     )
 
-    log.info(f"GROQ WARD NOTE STATUS: {response.status_code}")
-    log.info(f"GROQ WARD NOTE RESPONSE: {response.text[:500]}")
+    log.info(f"GEMINI WARD NOTE STATUS: {response.status_code}")
+    log.info(f"GEMINI WARD NOTE RESPONSE: {response.text[:500]}")
 
     if response.status_code != 200:
-        raise RuntimeError(f"Groq ward note generation error {response.status_code}: {response.text[:200]}")
+        raise RuntimeError(f"Gemini ward note generation error {response.status_code}: {response.text[:200]}")
 
     result = response.json()
     if isinstance(result, dict) and result.get("error"):
-        raise RuntimeError(f"Groq ward note generation error: {result['error']}")
+        raise RuntimeError(f"Gemini ward note generation error: {result['error']}")
 
     try:
-        generated = result["choices"][0]["message"]["content"].strip()
+        parts = result["candidates"][0]["content"]["parts"]
+        generated = "\n".join(
+            part.get("text", "") for part in parts if isinstance(part, dict)
+        ).strip()
     except (KeyError, IndexError, TypeError) as e:
-        raise RuntimeError(f"Unexpected Groq chat completion response: {str(result)[:300]}") from e
+        raise RuntimeError(f"Unexpected Gemini generateContent response: {str(result)[:300]}") from e
 
     if generated:
         return generated
 
-    raise RuntimeError("Groq ward note generation returned empty content")
+    raise RuntimeError("Gemini ward note generation returned empty content")
 
 # =========================
 # NOTION SAVE
@@ -363,7 +375,7 @@ def worker():
                 file_name=file_name
             )
 
-            transcript = transcribe_openai(audio, content_type, file_name, audio_url)
+            transcript = transcribe_groq(audio, content_type, file_name, audio_url)
 
             result = structure_text(transcript)
 
