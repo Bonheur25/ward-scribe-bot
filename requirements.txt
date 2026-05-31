@@ -1,0 +1,7 @@
+flask
+gunicorn
+groq
+google-generativeai
+notion-client
+requests
+python-dotenv
