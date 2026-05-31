@@ -9,6 +9,7 @@ import mimetypes
 from datetime import datetime
 from flask import Flask, request, jsonify
 from collections import deque
+from huggingface_hub import InferenceClient
 
 # =========================
 # APP SETUP
@@ -155,8 +156,6 @@ def structure_text(transcript):
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    API_URL = "https://router.huggingface.co/novita/v3/openai/chat/completions"
-
     system_prompt = (
         "You are a careful clinical ward scribe. Convert clinical transcripts "
         "into concise SOAP-style ward notes. Use only information supported by "
@@ -201,43 +200,35 @@ Transcript:
 {transcript}
 """.strip()
 
-    headers = {
-        "Authorization": f"Bearer {HF_TOKEN}",
-        "Content-Type": "application/json"
-    }
-
-    payload = {
-        "model": "mistralai/Mixtral-8x7B-Instruct-v0.1",
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
-        "max_tokens": 900,
-        "temperature": 0.2,
-        "top_p": 0.9
-    }
-
-    response = requests.post(
-        API_URL,
-        headers=headers,
-        json=payload,
-        timeout=120
+    client = InferenceClient(
+        model="meta-llama/Llama-3.3-70B-Instruct",
+        token=HF_TOKEN
     )
 
-    log.info(f"HF STRUCTURE STATUS: {response.status_code}")
-    log.info(f"HF STRUCTURE RESPONSE: {response.text[:500]}")
+    try:
+        response = client.chat_completion(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            max_tokens=800
+        )
+    except Exception as e:
+        raise RuntimeError(f"HF text generation error: {e}") from e
 
-    if response.status_code != 200:
-        raise RuntimeError(f"HF text generation error {response.status_code}: {response.text[:200]}")
-
-    result = response.json()
-    if isinstance(result, dict) and result.get("error"):
-        raise RuntimeError(f"HF text generation error: {result['error']}")
+    log.info(f"HF STRUCTURE RESPONSE: {str(response)[:500]}")
 
     try:
-        generated = result["choices"][0]["message"]["content"].strip()
-    except (KeyError, IndexError, TypeError) as e:
-        raise RuntimeError(f"Unexpected HF chat completion response: {str(result)[:300]}") from e
+        first_choice = response.choices[0]
+        message = first_choice.message
+        generated = message.content.strip()
+    except AttributeError:
+        try:
+            generated = response["choices"][0]["message"]["content"].strip()
+        except (KeyError, IndexError, TypeError) as e:
+            raise RuntimeError(f"Unexpected HF chat completion response: {str(response)[:300]}") from e
+    except (IndexError, TypeError) as e:
+        raise RuntimeError(f"Unexpected HF chat completion response: {str(response)[:300]}") from e
 
     if generated:
         return generated
